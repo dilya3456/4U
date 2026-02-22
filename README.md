@@ -1,120 +1,121 @@
-# Datasaur 2026 | Qazcode Challenge
+MedAI – AI-Powered Clinical Diagnosis System
 
-## Medical Diagnosis Assistant: Symptoms → ICD-10
+MedAI is an advanced clinical intelligence platform that uses state-of-the-art AI and machine learning algorithms to assist medical professionals in diagnosing symptoms. By leveraging a hybrid approach combining TF-IDF (word + character) vectorization and clinical protocols, MedAI offers a highly accurate, fast, and reliable symptom-to-diagnosis system, providing the top ICD-10 hypotheses with evidence from clinical sources.
 
-An AI-powered clinical decision support system that converts patient symptoms into structured diagnoses with ICD-10 codes, built on Kazakhstan clinical protocols.
+Key Features
 
----
+AI-Powered Analysis: MedAI uses a Hybrid TF-IDF model to analyze input symptoms with both word and character-level vectorization.
 
-## Challenge Overview
+Top ICD-10 Diagnoses: Get the top three possible diagnoses with detailed explanations, including ICD-10 codes and evidence from relevant clinical protocols.
 
-Participants will build an MVP product where users input symptoms as free text and receive:
+User-Friendly Interface: A simple, intuitive, and interactive UI that allows quick symptom input and provides results in a visually appealing format.
 
-- **Top-N probable diagnoses** ranked by likelihood
-- **ICD-10 codes** for each diagnosis
-- **Brief clinical explanations** based on official Kazakhstan protocols
+FastAPI Backend: Robust and high-performance backend for handling requests in real time.
 
-The solution **must** run **using GPT-OSS** — no external LLM API calls allowed. Refer to `notebooks/llm_api_examples.ipynb`
+No External Network Calls: All computations are done locally, ensuring privacy and reliability.
 
----
-## Data Sources
+Real-Time Diagnosis: The system is designed to return results instantly based on the symptoms provided.
 
-### Kazakhstan Clinical Protocols
-Official clinical guidelines serving as the primary knowledge base for diagnoses and diagnostic criteria.[[corpus.zip](https://github.com/user-attachments/files/25365231/corpus.zip)]
+Technologies Used
 
-Data Format
+Backend: FastAPI, Uvicorn
 
-```json
-{"protocol_id": "p_d57148b2d4", "source_file": "HELLP-СИНДРОМ.pdf", "title": "Одобрен", "icd_codes": ["O00", "O99"], "text": "Одобрен Объединенной комиссией по качеству медицинских услуг Министерства здравоохранения Республики Казахстан от «13» января 2023 года Протокол №177 КЛИНИЧЕСКИЙ ПРОТОКОЛ ДИАГНОСТИКИ И ЛЕЧЕНИЯ HELLP-СИНДРОМ I. ВВОДНАЯ ЧАСТЬ 1.1 Код(ы) МКБ-10: Код МКБ-10 O00-O99 Беременность, роды и послеродовой период О14.2 HELLP-синдром 1.2 Дата разработки/пересмотра протокола: 2022 год. ..."}
+Machine Learning: Scikit-learn (TF-IDF + Cosine Similarity)
 
-```
+Frontend: HTML, CSS, JavaScript (Responsive, mobile-friendly)
 
----
+Containerization: Docker
 
-## Evaluation
+Database: Local file-based storage of clinical protocols (no need for an external DB)
 
-### Metrics
-- **Primary metrics:** Accuracy@1, Recall@3, Latency
-- **Test set:**: Dataset with cases (`data/test_set`), use `query` and `gt` fields.
-- **Holdout set:** Private test cases (not included in this repository)
+Requirements
 
-### Product Evaluation
-Working demo interface: user inputs symptoms → system returns diagnoses with ICD-10 codes;
+Python 3.12+
 
----
-## Getting Started
+Docker (optional for containerization)
 
-### 1. Clone the repository
-```bash
-git clone https://github.com/dair-mus/qazcode-nu.git
-cd qazcode-nu
-```
+Git for version control
 
-### 2. Set up the environment
-We kindly ask you to use `uv` as your Python package manager.
+Installation Guide
+1. Clone the Repository
 
-Make sure that `uv` is installed. Refer to [uv documentation](https://docs.astral.sh/uv/getting-started/installation/)
+Start by cloning the project to your local machine:
 
-```bash
-uv venv
-source .venv/bin/activate
-uv sync
-```
+git clone https://github.com/dilya3456/4U.git
+2. Set up Python Environment
 
-### 3. Running validation
-You can use `src/mock_server.py` as an example service. (however, it has no web UI, only an endpoint for eval). 
-```bash
-uv run uvicorn src.mock_server:app --host 127.0.0.1 --port 8000
-```
-Then run the validation pipeline in a separate terminal:
-```bash
-uv run python evaluate.py -e http://127.0.0.1:8000/diagnose -d ./data/test_set -n <your_team_name>
-```
-`-e`: endpoint (POST request) that will accept the symptoms
+Create and activate a virtual environment:
 
-`-d`: path to the directory with protocols
+python3 -m venv .venv
+source .venv/bin/activate  # For macOS/Linux
+.venv\Scripts\activate     # For Windows
+3. Install Dependencies
 
-`-n`: name of your team (please avoid special symbols)
+Install the required Python dependencies:
 
-By default, the evalutaion results will be output to `data/evals`.
+pip install -r requirements.txt
+4. Running the Application Locally
 
-### Docker
-We prepared a Dockerfile to run our mock server example.
-```bash
-docker build -t mock-server .
-docker run -p 8000:8000 mock-server
-```
-Then run the validation as shown above.
+Run the FastAPI server:
 
-Feel free to use the mock-server FastAPI template and Dockerfile structure to build your own project around.
+uvicorn src.mock_server:app --host 0.0.0.0 --port 8000 --reload
 
-Remember to adjust the CMD in Dockerfile for your real Python server instead of `src.mock_server:app` before submission. 
+Now, open your browser and visit:
+http://127.0.0.1:8000
 
-### Submission Checklist
+5. Using Docker (Optional)
 
-- [ ] Everything packed into a single project (application, models, vector DB, indexes)
-- [ ] Image builds successfully: `docker build -t submission .`
-- [ ] Container starts and serves on port 8080: `docker run -p 8080:8080 submission`
-- [ ] Web UI accepts free-text symptoms input
-- [ ] Endpoint for POST requests accepts free-text symptoms
-- [ ] Returns top-N diagnoses with ICD-10 codes
-- [ ] No external network calls during inference
-- [ ] README with build and run instructions
+Build the Docker Image:
 
-### How to Submit
+docker build -t submission .
 
-1. Provide a Git repository with `Dockerfile`
-2. Submit the link via [submission form](https://docs.google.com/forms/d/e/1FAIpQLSe8qg6LsgJroHf9u_MVDBLPqD8S_W6MrphAteRqG-c4cqhQDw/viewform)
-3. We will pull, build, and run your container on the private holdout set
----
+Run the Docker Container:
 
-### Repo structure
-- `data/evals`: evaluation results directory
-- `data/examples/response.json`: example of a JSON response from your project endpoint
-- `data/test_set`: use these to evaluate your solution. 
-- `notebooks/llm_api_examples.ipynb`: shows how to make a request to GPT-OSS.
-- `src/`: solution source code would go here, has a `mock_server.py` as an entrypoint example.
-- `evaluate.py`: runs the given dataset through the provided endpoint.
-- `pyproject.toml`: describes dependencies of the project.
-- `uv.lock`: stores the exact dependency versions, autogenerated by uv.
-- `Dockerfile`: contains build instructions for a Docker image.
+docker run -p 8080:8080 submission
+
+Visit your app in the browser: http://127.0.0.1:8080
+
+How It Works
+
+Input Symptoms: Enter a list of symptoms (e.g., "fever, headache, dizziness") into the input box.
+
+Diagnose: MedAI processes the symptoms using a hybrid machine learning model to identify potential diagnoses.
+
+Top Diagnoses: The system returns the top 3 hypotheses, including their corresponding ICD-10 codes, explanations, and clinical evidence.
+
+Example Input:
+
+"fever, headache, dizziness"
+
+Example Output:
+
+Rank 1: Hypothesis: G43.0 (Migraine with Aura)
+
+Explanation: "Protocol: p_97a12ac54. Evidence: The patient has a history of migraines with aura. Symptoms include..."
+
+Contributions
+
+We welcome contributions! Here’s how you can help:
+
+Fork the repository
+
+Create a feature branch (git checkout -b feature-name)
+
+Commit your changes (git commit -am 'Add new feature')
+
+Push to the branch (git push origin feature-name)
+
+Create a new pull request
+
+Why MedAI?
+
+Accurate and Fast: MedAI offers fast, reliable diagnosis predictions based on real clinical protocols.
+
+No External Dependencies: Everything is handled internally for faster processing and increased security.
+
+Easy to Use: Simple web interface that provides actionable insights with just a few clicks.
+
+License
+
+This project is licensed under the MIT License – see the LICENSE
+ file for details.
