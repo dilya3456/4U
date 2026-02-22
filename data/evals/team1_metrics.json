@@ -1,0 +1,11 @@
+{
+  "submission_name": "team1",
+  "total_protocols": 221,
+  "accuracy_at_1_percent": 0.9,
+  "recall_at_3_percent": 8.6,
+  "latency_avg_s": 0.354,
+  "latency_min_s": 0.176,
+  "latency_max_s": 0.407,
+  "latency_p50_s": 0.351,
+  "latency_p95_s": 0.376
+}

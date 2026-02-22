@@ -1,0 +1,351 @@
+# import json
+import re
+from pathlib import Path
+from contextlib import asynccontextmanager
+from typing import Optional
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+
+# =========================
+# Paths (ВАЖНО для твоей структуры)
+# =========================
+# После unzip у тебя: corpus/corpus/protocols_corpus.jsonl
+DATA_DIR = Path("corpus")
+CORPUS_FILE = DATA_DIR / "corpus" / "protocols_corpus.jsonl"
+
+# =========================
+# Text + ICD utils
+# =========================
+ICD_EXACT_RE = re.compile(r"\b([A-ZА-Я][0-9]{2}(?:\.[0-9A-ZА-Я]{1,2})?)\b")
+ICD_RANGE_RE = re.compile(r"\b([A-ZА-Я][0-9]{2})\s*-\s*([A-ZА-Я][0-9]{2})\b")
+
+
+def normalize_text(s: str) -> str:
+    s = (s or "").lower().replace("ё", "е")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def extract_exact_icds(text: str) -> list[str]:
+    if not text:
+        return []
+    t = text.upper().replace("Ё", "Е")
+    found = ICD_EXACT_RE.findall(t)
+    out = []
+    for x in found:
+        if x not in out:
+            out.append(x)
+    return out
+
+
+def is_range_code(code: str) -> bool:
+    c = (code or "").strip().upper()
+    return bool(re.fullmatch(r"[A-ZА-Я][0-9]{2}\s*-\s*[A-ZА-Я][0-9]{2}", c))
+
+
+def is_general_code(code: str) -> bool:
+    c = (code or "").strip().upper()
+    # J18 / S22 / O14 etc
+    return bool(re.fullmatch(r"[A-ZА-Я][0-9]{2}", c))
+
+
+def is_specific_code(code: str) -> bool:
+    c = (code or "").strip().upper()
+    return bool(re.fullmatch(r"[A-ZА-Я][0-9]{2}\.[0-9A-ZА-Я]{1,2}", c))
+
+
+# =========================
+# Load corpus
+# =========================
+protocol_texts: list[str] = []
+protocol_meta: list[dict] = []
+
+
+def add_obj(obj: dict):
+    if not isinstance(obj, dict):
+        return
+    if "text" not in obj or "icd_codes" not in obj:
+        return
+
+    title = obj.get("title", "") or ""
+    text = obj.get("text", "") or ""
+
+    full_text = f"{title}\n{text}".strip()
+    protocol_texts.append(normalize_text(full_text))
+
+    icds_from_meta = obj.get("icd_codes", []) or []
+    icds_from_text = extract_exact_icds(text)
+
+    merged = []
+    for icd in list(icds_from_meta) + list(icds_from_text):
+        if not icd:
+            continue
+        icd_norm = icd.strip().upper()
+        if icd_norm and icd_norm not in merged:
+            merged.append(icd_norm)
+
+    obj["_icd_merged"] = merged
+    protocol_meta.append(obj)
+
+
+def load_corpus():
+    protocol_texts.clear()
+    protocol_meta.clear()
+
+    # 1) prefer single file
+    if CORPUS_FILE.exists():
+        with open(CORPUS_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    add_obj(json.loads(line))
+                except Exception:
+                    continue
+        return
+
+    # 2) fallback: scan dir
+    for file in DATA_DIR.rglob("*"):
+        if not file.is_file():
+            continue
+        suffix = file.suffix.lower()
+        try:
+            if suffix == ".jsonl":
+                with open(file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        add_obj(json.loads(line))
+            elif suffix == ".json":
+                with open(file, "r", encoding="utf-8") as f:
+                    add_obj(json.load(f))
+        except Exception:
+            continue
+
+
+load_corpus()
+print(f"Loaded protocols: {len(protocol_texts)}")
+
+
+# =========================
+# Hybrid TF-IDF
+# =========================
+vectorizer_word = TfidfVectorizer(
+    analyzer="word",
+    ngram_range=(1, 2),
+    min_df=2,
+    token_pattern=r"(?u)\b[а-яa-z0-9\-]{2,}\b",
+)
+
+vectorizer_char = TfidfVectorizer(
+    analyzer="char_wb",
+    ngram_range=(3, 5),
+    min_df=2,
+)
+
+tfidf_word = vectorizer_word.fit_transform(protocol_texts) if protocol_texts else None
+tfidf_char = vectorizer_char.fit_transform(protocol_texts) if protocol_texts else None
+
+
+def topk_by_similarity(query_vec, matrix, topk: int) -> list[int]:
+    sims = cosine_similarity(query_vec, matrix).flatten()
+    if topk >= len(sims):
+        return sims.argsort()[::-1].tolist()
+    return sims.argsort()[-topk:][::-1].tolist()
+
+
+def compute_ranks(n_docs: int, ranked_indices: list[int]) -> list[int]:
+    ranks = [0] * n_docs
+    for r, idx in enumerate(ranked_indices, start=1):
+        ranks[idx] = r
+    return ranks
+
+
+# =========================
+# ICD scoring
+# =========================
+def score_icds(top_docs: list[int], doc_score: dict[int, float]) -> list[tuple[str, float, int]]:
+    icd_score: dict[str, float] = {}
+    icd_best_doc: dict[str, int] = {}
+
+    for idx in top_docs:
+        base = float(doc_score.get(idx, 0.0))
+        icds = protocol_meta[idx].get("_icd_merged", []) or []
+
+        for icd in icds:
+            s = base
+
+            # penalties/bonuses
+            if "-" in icd and is_range_code(icd):
+                s *= 0.15  # ranges like O00-O99 are почти всегда мусор для gt
+            elif is_general_code(icd):
+                s *= 0.60  # too broad
+            elif is_specific_code(icd):
+                s *= 1.30  # specific code is good
+            else:
+                s *= 1.00
+
+            icd_score[icd] = icd_score.get(icd, 0.0) + s
+
+            if icd not in icd_best_doc or base > doc_score.get(icd_best_doc[icd], -1.0):
+                icd_best_doc[icd] = idx
+
+    ranked = sorted(icd_score.items(), key=lambda x: x[1], reverse=True)
+    out: list[tuple[str, float, int]] = []
+    for icd, sc in ranked:
+        out.append((icd, float(sc), icd_best_doc.get(icd, top_docs[0] if top_docs else 0)))
+    return out
+
+
+def make_explanation(icd: str, doc_idx: int) -> str:
+    obj = protocol_meta[doc_idx]
+    pid = obj.get("protocol_id", "unknown")
+    title = obj.get("title", "") or ""
+    text = (obj.get("text", "") or "").strip()
+
+    t_up = text.upper().replace("Ё", "Е")
+    pos = t_up.find(icd.upper())
+    if pos != -1:
+        start = max(0, pos - 120)
+        end = min(len(text), pos + 160)
+        snippet = text[start:end].replace("\n", " ")
+    else:
+        snippet = text[:260].replace("\n", " ")
+
+    snippet = re.sub(r"\s+", " ", snippet).strip()
+    return f"Protocol {pid}: {title}. Evidence: {snippet}"
+
+
+# =========================
+# FastAPI
+# =========================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("\n🏥 Diagnostic Server (HYBRID TF-IDF)")
+    print("=" * 50)
+    print("UI:   /")
+    print("API:  POST /diagnose")
+    print("Docs: /docs")
+    print("=" * 50)
+    yield
+
+
+app = FastAPI(title="Diagnostic Server", lifespan=lifespan)
+
+
+class DiagnoseRequest(BaseModel):
+    symptoms: Optional[str] = ""
+
+
+class Diagnosis(BaseModel):
+    rank: int
+    diagnosis: str
+    icd10_code: str
+    explanation: str
+
+
+class DiagnoseResponse(BaseModel):
+    diagnoses: list[Diagnosis]
+
+
+@app.get("/", response_class=HTMLResponse)
+async def ui():
+    return HTMLResponse(
+        """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>MedAI – Diagnose</title>
+  <style>
+    body{font-family:system-ui,Arial;max-width:900px;margin:40px auto;padding:0 16px}
+    textarea{width:100%;padding:12px;border-radius:10px;border:1px solid #ddd;font-size:16px}
+    button{margin-top:12px;padding:10px 14px;border-radius:10px;border:0;background:#111;color:#fff;font-size:16px;cursor:pointer}
+    .card{margin-top:18px;padding:14px;border:1px solid #eee;border-radius:12px}
+    .muted{color:#666}
+    pre{white-space:pre-wrap}
+  </style>
+</head>
+<body>
+  <h1>MedAI – Symptoms → ICD-10</h1>
+  <p class="muted">Paste symptoms, get top ICD-10 hypotheses.</p>
+
+  <textarea id="sym" rows="6" placeholder="Например: высокая температура, кашель, одышка..."></textarea>
+  <br/>
+  <button onclick="go()">Diagnose</button>
+
+  <div id="out"></div>
+
+<script>
+async function go(){
+  const text = document.getElementById('sym').value;
+  const out = document.getElementById('out');
+  out.innerHTML = "<div class='card'>Running...</div>";
+  const r = await fetch('/diagnose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symptoms:text})});
+  const data = await r.json();
+  out.innerHTML = "<pre class='card'>"+JSON.stringify(data,null,2)+"</pre>";
+}
+</script>
+</body>
+</html>
+"""
+    )
+
+
+@app.post("/diagnose", response_model=DiagnoseResponse)
+async def handle_diagnose(request: DiagnoseRequest) -> DiagnoseResponse:
+    query = normalize_text(request.symptoms or "")
+    if not query or not protocol_texts:
+        return DiagnoseResponse(diagnoses=[])
+
+    TOPK = 80
+    N = len(protocol_texts)
+
+    ranked_word = []
+    ranked_char = []
+
+    if tfidf_word is not None:
+        qv_word = vectorizer_word.transform([query])
+        ranked_word = topk_by_similarity(qv_word, tfidf_word, TOPK)
+
+    if tfidf_char is not None:
+        qv_char = vectorizer_char.transform([query])
+        ranked_char = topk_by_similarity(qv_char, tfidf_char, TOPK)
+
+    ranks_word = compute_ranks(N, ranked_word) if ranked_word else [0] * N
+    ranks_char = compute_ranks(N, ranked_char) if ranked_char else [0] * N
+
+    # RRF fusion
+    fused = [0.0] * N
+    K = 60
+    for i in range(N):
+        if ranks_word[i] > 0:
+            fused[i] += 1.0 / (K + ranks_word[i])
+        if ranks_char[i] > 0:
+            fused[i] += 1.0 / (K + ranks_char[i])
+
+    top_docs = sorted(range(N), key=lambda i: fused[i], reverse=True)[:25]
+    doc_score = {i: fused[i] for i in top_docs}
+
+    icd_ranked = score_icds(top_docs, doc_score)[:3]
+
+    diagnoses: list[Diagnosis] = []
+    for r, (icd, _sc, best_doc) in enumerate(icd_ranked, start=1):
+        diagnoses.append(
+            Diagnosis(
+                rank=r,
+                diagnosis=f"Hypothesis: {icd}",
+                icd10_code=icd,
+                explanation=make_explanation(icd, best_doc),
+            )
+        )
+
+    return DiagnoseResponse(diagnoses=diagnoses)
